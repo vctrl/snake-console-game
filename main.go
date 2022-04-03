@@ -2,6 +2,9 @@ package main
 
 import (
 	"fmt"
+	"golang.org/x/term"
+	"log"
+	"os"
 	"strings"
 	"time"
 )
@@ -15,12 +18,36 @@ const (
 	RIGHT
 )
 
+var (
+	h    = 10
+	l    = 50
+	step = time.Second / 10
+)
+
 func main() {
-	snake := NewSnake(50/2, 10/2, 1, RIGHT)
-	g := NewSnakeGame(10, 50, snake)
+	snake := NewSnake(l/2, h/2, 1, RIGHT, l, h)
+	g := NewSnakeGame(h, l, snake)
+
+	inCh := make(chan []byte, 100)
+
+	go func() {
+		oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+		if err != nil {
+			log.Fatal(err)
+			return
+		}
+
+		defer term.Restore(int(os.Stdin.Fd()), oldState)
+
+		b := make([]byte, 1)
+		for {
+			os.Stdin.Read(b)
+			inCh <- b
+		}
+	}()
 
 	stopCh := make(chan struct{})
-	e := NewEngine(time.NewTicker(time.Second), g, stopCh)
+	e := NewEngine(time.NewTicker(step), g, stopCh, inCh)
 	go func() {
 		e.Start()
 	}()
@@ -41,16 +68,18 @@ func main() {
 }
 
 type Engine struct {
-	t    *time.Ticker
-	g    Game
-	stop chan struct{}
+	t     *time.Ticker
+	g     Game
+	input chan []byte
+	stop  chan struct{}
 }
 
-func NewEngine(t *time.Ticker, g Game, stop chan struct{}) *Engine {
+func NewEngine(t *time.Ticker, g Game, stop chan struct{}, input chan []byte) *Engine {
 	return &Engine{
-		t:    t,
-		g:    g,
-		stop: stop,
+		t:     t,
+		g:     g,
+		stop:  stop,
+		input: input,
 	}
 }
 
@@ -60,9 +89,15 @@ func (e *Engine) Start() {
 			select {
 			case <-e.t.C:
 				// todo size-sensitive
-				fmt.Print("\r\b\r\b\r\b\r\b\r\b\r\b\r\b\r\b\r\b\r\b\r\b")
+				for i := 0; i < 11; i++ {
+					fmt.Print("\r")
+					if i != 10 {
+						fmt.Print("\b")
+					}
+				}
 				fmt.Print(e.g.String())
-				e.g.Frame()
+
+				e.g.Frame(e.input)
 			case <-e.stop:
 				return
 			}
@@ -80,7 +115,7 @@ func (e *Engine) redraw() {
 
 type Game interface {
 	fmt.Stringer
-	Frame()
+	Frame(input chan []byte)
 }
 
 type Snake struct {
@@ -88,27 +123,61 @@ type Snake struct {
 	y int
 	l int
 	d Direction
+
+	borderX int
+	borderY int
 }
 
-func NewSnake(x, y, l int, d Direction) *Snake {
+func NewSnake(x, y, l int, d Direction, bx, by int) *Snake {
 	return &Snake{
-		x: x,
-		y: y,
-		l: l,
-		d: d,
+		x:       x,
+		y:       y,
+		l:       l,
+		d:       d,
+		borderX: bx,
+		borderY: by,
 	}
 }
 
-func (s *Snake) Move() {
+func (s *Snake) Move(in []byte) {
+	switch string(in) {
+	case "w":
+		s.d = UP
+	case "s":
+		s.d = DOWN
+	case "a":
+		s.d = LEFT
+	case "d":
+		s.d = RIGHT
+	default:
+
+	}
+
 	switch s.d {
 	case UP:
-		s.y++
+		if s.y-1 == 0 {
+			s.y = s.borderY - 2
+		} else {
+			s.y--
+		}
 	case DOWN:
-		s.y--
+		if s.y+1 == s.borderY-1 {
+			s.y = 1
+		} else {
+			s.y++
+		}
 	case LEFT:
-		s.x--
+		if s.x-1 == 0 {
+			s.x = s.borderX - 2
+		} else {
+			s.x--
+		}
 	case RIGHT:
-		s.x++
+		if s.x+1 == s.borderX-1 {
+			s.x = 1
+		} else {
+			s.x++
+		}
 	}
 }
 
@@ -187,13 +256,18 @@ func (g *SnakeGame) String() string {
 		for _, ff := range f {
 			s.WriteString(ff)
 		}
-		s.WriteString("\n")
+		s.WriteString("\r\n")
 	}
 
 	return s.String()
 }
 
-func (g *SnakeGame) Frame() {
-	g.f.snake.Move()
+func (g *SnakeGame) Frame(input chan []byte) {
+	select {
+	case in := <-input:
+		g.f.snake.Move(in)
+	default:
+		g.f.snake.Move([]byte("will not happen if not press button"))
+	}
 	g.f.Redraw()
 }
